@@ -47,6 +47,38 @@ The first run opens the Feishu / Lark app registration wizard if no config exist
 ~/.lark-codex/
 ```
 
+`run` keeps the bot attached to the current terminal. Closing that terminal stops the foreground process.
+
+For normal use, start the OS-managed daemon instead:
+
+```bash
+node ./bin/lark-codex-bridge.mjs start
+node ./bin/lark-codex-bridge.mjs status
+```
+
+`start` installs and launches a background service. On macOS it writes a user LaunchAgent:
+
+```text
+~/Library/LaunchAgents/ai.lark-codex-bridge.bot.plist
+```
+
+That LaunchAgent runs `node ./bin/lark-codex-bridge.mjs run` with `RunAtLoad` and `KeepAlive`, so closing the terminal does not stop the bot. If you move or delete this repository, rerun `start` from the new path so the service points at the right entry file.
+
+Daemon logs are written to:
+
+```bash
+tail -f ~/.lark-codex/logs/daemon-stderr.log
+tail -f ~/.lark-codex/logs/daemon-stdout.log
+```
+
+To manage the daemon:
+
+```bash
+node ./bin/lark-codex-bridge.mjs restart
+node ./bin/lark-codex-bridge.mjs stop
+node ./bin/lark-codex-bridge.mjs unregister
+```
+
 ## Host Commands
 
 ```text

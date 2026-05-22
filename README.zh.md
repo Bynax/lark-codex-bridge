@@ -46,6 +46,38 @@ node ./bin/lark-codex-bridge.mjs run
 ~/.lark-codex/config.json
 ```
 
+`run` 是前台模式，会挂在当前 Terminal 上；如果关掉这个 Terminal，前台 bot 进程也会退出。
+
+日常使用建议启动系统托管的后台服务：
+
+```bash
+node ./bin/lark-codex-bridge.mjs start
+node ./bin/lark-codex-bridge.mjs status
+```
+
+`start` 会注册并启动后台 daemon。在 macOS 上，它会写入用户级 LaunchAgent：
+
+```text
+~/Library/LaunchAgents/ai.lark-codex-bridge.bot.plist
+```
+
+这个 LaunchAgent 会执行 `node ./bin/lark-codex-bridge.mjs run`，并启用 `RunAtLoad` 和 `KeepAlive`，所以关掉 Terminal 不会停止 bot；进程异常退出后也会由系统拉起。如果移动或删除当前仓库目录，需要在新路径下重新执行 `start`，否则后台服务会找不到入口文件。
+
+后台日志在：
+
+```bash
+tail -f ~/.lark-codex/logs/daemon-stderr.log
+tail -f ~/.lark-codex/logs/daemon-stdout.log
+```
+
+常用管理命令：
+
+```bash
+node ./bin/lark-codex-bridge.mjs restart
+node ./bin/lark-codex-bridge.mjs stop
+node ./bin/lark-codex-bridge.mjs unregister
+```
+
 ## CLI 命令
 
 ```text
