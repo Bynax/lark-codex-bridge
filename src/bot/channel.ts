@@ -21,6 +21,7 @@ import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
   getAgentStopGraceMs,
+  getAgentId,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRequireMentionInGroup,
@@ -488,16 +489,22 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
   const cwd = workspaces.cwdFor(scope) ?? homedir();
-  const resumeFrom = sessions.resumeFor(scope, cwd);
+  const agentId = getAgentId(controls.cfg);
+  const resumeFrom = sessions.resumeFor(scope, cwd, agentId);
   if (resumeFrom) {
-    log.info('session', 'resume', { sessionId: resumeFrom, cwd });
+    log.info('session', 'resume', { sessionId: resumeFrom, cwd, agent: agentId });
   } else {
     const stale = sessions.getRaw(scope);
-    if (stale && stale.cwd !== cwd) {
-      log.info('session', 'stale-cleared', { staleCwd: stale.cwd, newCwd: cwd });
+    if (stale && (stale.cwd !== cwd || stale.agent !== agentId)) {
+      log.info('session', 'stale-cleared', {
+        staleCwd: stale.cwd,
+        newCwd: cwd,
+        staleAgent: stale.agent ?? 'codex',
+        agent: agentId,
+      });
       sessions.clear(scope);
     } else {
-      log.info('session', 'fresh', { cwd });
+      log.info('session', 'fresh', { cwd, agent: agentId });
     }
   }
 
@@ -541,7 +548,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     ...(mode === 'topic' && threadId ? { replyInThread: true } : {}),
   };
 
-  // For non-card modes Codex output doesn't surface visually until either
+  // For non-card modes agent output doesn't surface visually until either
   // a first streamed token (markdown mode) or the whole run ends (text mode).
   // Add a "Typing" reaction to the triggering message as an instant ack;
   // remove it in finally. Card mode has a visible "正在思考…" footer the
@@ -557,7 +564,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           card: {
             initial: renderCard(initialState),
             producer: async (ctrl) => {
-              await processAgentStream(handle, sessions, scope, cwd, idleTimeoutMs, async (state) => {
+              await processAgentStream(handle, sessions, scope, cwd, agentId, idleTimeoutMs, async (state) => {
                 await ctrl.update(renderCard(filterForPrefs(state)));
               });
             },
@@ -570,7 +577,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         chatId,
         {
           markdown: async (ctrl) => {
-            await processAgentStream(handle, sessions, scope, cwd, idleTimeoutMs, async (state) => {
+            await processAgentStream(handle, sessions, scope, cwd, agentId, idleTimeoutMs, async (state) => {
               await ctrl.setContent(renderText(filterForPrefs(state)));
             });
           },
@@ -582,7 +589,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       // the run, then post the final rendered text once as a plain markdown
       // (msg_type=post) message — no card, no streaming, no typewriter.
       let finalState: RunState = initialState;
-      await processAgentStream(handle, sessions, scope, cwd, idleTimeoutMs, async (state) => {
+      await processAgentStream(handle, sessions, scope, cwd, agentId, idleTimeoutMs, async (state) => {
         finalState = state;
       });
       const body = renderText(filterForPrefs(finalState));
@@ -610,17 +617,18 @@ async function processAgentStream(
   sessions: SessionStore,
   scope: string,
   cwd: string,
+  agentId: ReturnType<typeof getAgentId>,
   idleTimeoutMs: number | undefined,
   flush: (state: RunState) => Promise<void>,
 ): Promise<void> {
   let state: RunState = initialState;
 
-  // Idle watchdog: Codex going silent for `idleTimeoutMs` is treated as
+  // Idle watchdog: the agent going silent for `idleTimeoutMs` is treated as
   // "presumed hung", we stop() and surface a timeout marker on the card.
   //
-  // BUT — Codex can legitimately be silent for a long time when it's
+  // BUT — an agent can legitimately be silent for a long time when it's
   // waiting on a long-running tool call. In that case there's no event
-  // stream activity from Codex itself, only the tool subprocess running.
+  // stream activity from the agent itself, only the tool subprocess running.
   // We track which tool_use ids haven't matched
   // a tool_result yet, and pause the watchdog whenever the set is
   // non-empty.
@@ -669,8 +677,8 @@ async function processAgentStream(
       if (evt.type === 'system') {
         if (evt.sessionId) {
           const effectiveCwd = evt.cwd ?? cwd;
-          sessions.set(scope, evt.sessionId, effectiveCwd);
-          log.info('session', 'set', { sessionId: evt.sessionId });
+          sessions.set(scope, evt.sessionId, effectiveCwd, agentId);
+          log.info('session', 'set', { sessionId: evt.sessionId, agent: agentId });
         }
         continue;
       }
@@ -699,7 +707,7 @@ async function processAgentStream(
 
   // If state already reached a terminal event (done/error/etc.) before the
   // watchdog or interrupt could land, don't clobber it — that real terminal
-  // wins. This avoids "Codex finished but flush was slow → timer fired
+  // wins. This avoids "agent finished but flush was slow → timer fired
   // mid-flush → user sees 'idle_timeout' on a successful run".
   if (state.terminal === 'running') {
     if (idleFired) {
@@ -715,7 +723,7 @@ async function processAgentStream(
     // Reap the subprocess. Two regimes:
   //  - Interrupted (user /stop, idle watchdog, disconnect): stop() was already
   //    fire-and-forgotten by whoever set handle.interrupted; this awaits it.
-  //  - Natural done: the terminal event can arrive before Codex actually
+  //  - Natural done: the terminal event can arrive before the agent actually
   //    closes stdout. Wait it out so the run exits with
   //    code 0; only SIGTERM as a hung-process safety net.
   if (handle.interrupted) {
@@ -730,7 +738,7 @@ async function processAgentStream(
 }
 
 /**
- * How long to wait for Codex to close stdout after a terminal event before
+ * How long to wait for the agent to close stdout after a terminal event before
  * forcing a SIGTERM.
  */
 const POST_DONE_EXIT_GRACE_MS = 2000;

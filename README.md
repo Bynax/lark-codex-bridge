@@ -1,19 +1,21 @@
 # lark-codex-bridge
 
-A lightweight Feishu / Lark chat bridge for the local Codex CLI. DM the bot, or `@bot` in a group, and Codex runs on your machine in the workspace you choose.
+A lightweight Feishu / Lark chat bridge for local AI coding CLIs. DM the bot, or `@bot` in a group, and Codex or Claude Code runs on your machine in the workspace you choose.
 
 [中文 README](./README.zh.md)
 
 ## Features
 
 - DM replies by default; groups and topic groups require `@bot` by default
-- Per-chat / per-topic Codex sessions with automatic resume
+- Selectable local agent: Codex by default, Claude Code optional
+- Per-chat / per-topic agent sessions with automatic resume
 - `/new`, `/reset`, and `/stop` for session control
 - `/new chat [name]` to create a fresh group chat and invite the operator
 - `/cd <path>` and `/ws list|save|use|remove` for workspace switching
+- `/agent codex|claude` or `/config` to switch the active agent
 - `/status`, `/help`, `/config`, and workspace lists as interactive Lark cards
-- Codex output rendered as streaming cards or markdown messages
-- Images are downloaded locally and passed to Codex as image inputs
+- Agent output rendered as streaming cards or markdown messages
+- Images are downloaded locally and passed to Codex as image inputs; Claude Code sees the local attachment paths in the prompt
 - Quoted messages and received Lark cards are expanded into prompt context
 
 ## Out of Scope
@@ -26,11 +28,14 @@ A lightweight Feishu / Lark chat bridge for the local Codex CLI. DM the bot, or 
 ## Prerequisites
 
 - Node.js >= 20
-- Codex CLI installed and logged in
+- Codex CLI installed and logged in, or Claude Code CLI installed and logged in
 
 ```bash
 npm install -g @openai/codex
 codex
+
+# Optional, when using /agent claude
+claude
 ```
 
 ## Run
@@ -99,7 +104,8 @@ lark-codex-bridge unregister          Remove service registration
 |---|---|
 | `/new`, `/reset` | Clear the current chat session |
 | `/new chat [name]` | Create a new group chat |
-| `/resume [N]` | List recent Codex sessions and resume one |
+| `/resume [N]` | List recent sessions for the active agent and resume one |
+| `/agent [codex\|claude]` | Show or switch the active local agent |
 | `/cd <path>` | Switch cwd and reset the session |
 | `/ws list` | Show workspace card |
 | `/ws save <name>` | Save current cwd as a named workspace |
@@ -107,11 +113,32 @@ lark-codex-bridge unregister          Remove service registration
 | `/ws remove <name>` | Delete a named workspace |
 | `/status` | Show cwd / session / agent status |
 | `/config` | Adjust reply mode, tool display, concurrency, and access control |
-| `/stop` | Stop the active Codex run |
+| `/stop` | Stop the active agent run |
 | `/timeout [N\|off\|default]` | Configure idle timeout for this session |
 | `/ps` | List running bots on this machine |
 | `/exit <id\|#>` | Stop a specific bot |
 | `/reconnect` | Force a Lark WebSocket reconnect |
 | `/help` | Show help card |
 
-Everything else is forwarded to Codex.
+Everything else is forwarded to the active agent.
+
+## Agent Selection
+
+Codex is the default for existing configs. To switch from Feishu:
+
+```text
+/agent claude
+/agent codex
+```
+
+You can also use `/config` and choose the Agent field. The setting is saved in:
+
+```json
+{
+  "preferences": {
+    "agent": "claude"
+  }
+}
+```
+
+Codex and Claude Code session ids are kept separate. Switching agents resets the current chat's resumable session so the bridge does not try to resume a Codex session with Claude or the reverse.

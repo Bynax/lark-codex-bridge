@@ -1,14 +1,19 @@
 import dns from 'node:dns';
 import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
-import { CodexAdapter } from '../../agent/codex/adapter';
+import {
+  agentDisplayName,
+  agentInstallHint,
+  ConfiguredAgentAdapter,
+  createAgentAdapter,
+} from '../../agent/factory';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
 import { runRegistrationWizard } from '../../bot/wizard';
 import type { Controls } from '../../commands';
 import { setSecret } from '../../config/keystore';
 import { paths } from '../../config/paths';
 import type { AppConfig } from '../../config/schema';
-import { isComplete, secretKeyForApp } from '../../config/schema';
+import { getAgentId, isComplete, secretKeyForApp } from '../../config/schema';
 import {
   buildEncryptedAccountConfig,
   ensureSecretsGetterWrapper,
@@ -76,10 +81,11 @@ export async function runStart(opts: StartOptions): Promise<void> {
 
   await preFlightChecks({ skip: opts.skipPreflight });
 
-  const agent = new CodexAdapter();
-  if (!(await agent.isAvailable())) {
-    console.error('✗ 未找到 codex CLI。请先安装 Codex CLI：');
-    console.error('  npm install -g @openai/codex');
+  const initialAgentId = getAgentId(cfg);
+  const initialAgent = createAgentAdapter(initialAgentId);
+  if (!(await initialAgent.isAvailable())) {
+    console.error(`✗ 未找到 ${agentDisplayName(initialAgentId)}。`);
+    console.error(`  ${agentInstallHint(initialAgentId)}`);
     process.exit(1);
   }
 
@@ -119,6 +125,8 @@ export async function runStart(opts: StartOptions): Promise<void> {
   // and replace credentials without plumbing through the whole runStart scope.
   let bridge: BridgeChannel;
   let restarting = false;
+  let currentCfg = cfg;
+  const agent = new ConfiguredAgentAdapter(() => currentCfg);
 
   let stopping = false;
   const stop = async (sig: string): Promise<void> => {
@@ -148,6 +156,11 @@ export async function runStart(opts: StartOptions): Promise<void> {
       try {
         const next = await loadConfig(configPath);
         if (!isComplete(next)) throw new Error('config incomplete after change');
+        const nextAgentId = getAgentId(next);
+        const nextAgent = createAgentAdapter(nextAgentId);
+        if (!(await nextAgent.isAvailable())) {
+          throw new Error(`${agentDisplayName(nextAgentId)} unavailable: ${agentInstallHint(nextAgentId)}`);
+        }
         console.log(
           `[restart] connecting new bridge with appId=${next.accounts.app.id} tenant=${next.accounts.app.tenant}...`,
         );
@@ -158,13 +171,21 @@ export async function runStart(opts: StartOptions): Promise<void> {
         // this ordering, a failed restart would tear down the only
         // keepalive in the process and the bot would never recover until
         // someone manually restarts it.
-        const next_bridge = await startChannel({
-          cfg: next,
-          agent,
-          sessions,
-          workspaces,
-          controls,
-        });
+        const previousCfg = currentCfg;
+        currentCfg = next;
+        let next_bridge: BridgeChannel;
+        try {
+          next_bridge = await startChannel({
+            cfg: next,
+            agent,
+            sessions,
+            workspaces,
+            controls,
+          });
+        } catch (err) {
+          currentCfg = previousCfg;
+          throw err;
+        }
         console.log('[restart] disconnecting old bridge...');
         try {
           await bridge.disconnect();

@@ -1,6 +1,7 @@
-import type { MessageReplyMode } from '../config/schema';
+import type { AgentId, MessageReplyMode } from '../config/schema';
 
 export interface ConfigFormOpts {
+  agent: AgentId;
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
   maxConcurrentRuns: number;
@@ -33,6 +34,22 @@ export function configFormCard(opts: ConfigFormOpts): object {
           tag: 'form',
           name: 'config_form',
           elements: [
+            {
+              tag: 'markdown',
+              content:
+                '**Agent**\n' +
+                '_Codex: 使用本地 `codex` CLI_\n' +
+                '_Claude Code: 使用本地 `claude` CLI_',
+            },
+            {
+              tag: 'select_static',
+              name: 'agent',
+              initial_option: opts.agent,
+              options: [
+                { text: { tag: 'plain_text', content: 'Codex(默认)' }, value: 'codex' },
+                { text: { tag: 'plain_text', content: 'Claude Code' }, value: 'claude' },
+              ],
+            },
             {
               tag: 'markdown',
               content:
@@ -204,6 +221,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
 }
 
 export function configSavedCard(opts: ConfigFormOpts): object {
+  const agentLabel = opts.agent === 'claude' ? 'Claude Code' : 'Codex';
   const replyLabel =
     opts.messageReply === 'card'
       ? '交互卡片'
@@ -223,6 +241,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
           tag: 'markdown',
           content:
             '✅ **偏好已保存**\n\n' +
+            `**Agent**:${agentLabel}\n` +
             `**消息回复方式**:${replyLabel}\n` +
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +

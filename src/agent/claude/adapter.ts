@@ -6,15 +6,15 @@ import { log } from '../../core/logger';
 import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../types';
 import { translateEvent } from './stream-json';
 
-export interface CodexAdapterOptions {
+export interface ClaudeAdapterOptions {
   binary?: string;
 }
 
-type CodexChild = ChildProcessByStdio<null, Readable, Readable>;
+type ClaudeChild = ChildProcessByStdio<null, Readable, Readable>;
 
-const BRIDGE_CONTEXT_PROMPT = `# lark-codex-bridge 运行约定
+const BRIDGE_SYSTEM_PROMPT = `# lark-codex-bridge 运行约定
 
-你正在 lark-codex-bridge 里运行：飞书/Lark 用户在聊天框里和本地 Codex CLI 对话。
+你正在 lark-codex-bridge 里运行：飞书/Lark 用户在聊天框里和本地 Claude Code CLI 对话。
 
 每条用户消息顶部可能带有 <bridge_context>、<quoted_message> 或 <interactive_card> 块。
 这些块是 bridge 注入的上下文，帮助你理解消息来源、引用对象和用户发来的飞书卡片结构。不要把这些 XML 标签照抄给用户。
@@ -25,18 +25,18 @@ const BRIDGE_CONTEXT_PROMPT = `# lark-codex-bridge 运行约定
 
 这表示用户在飞书里点了按钮。请把它当作同一会话里的后续输入继续处理。
 
-如果你通过可用工具发送飞书 CardKit 卡片，并希望按钮点击回到当前会话，请在按钮 value 里加入 "__agent_cb": true 或 "__codex_cb": true。bridge 会去掉这个 marker，再把按钮 payload 作为 [card-click] 消息发回给你。
+如果你通过可用工具发送飞书 CardKit 卡片，并希望按钮点击回到当前会话，请在按钮 value 里加入 "__agent_cb": true 或 "__claude_cb": true。bridge 会去掉这个 marker，再把按钮 payload 作为 [card-click] 消息发回给你。
 
 回复应面向飞书聊天场景：简洁、直接、默认用 Markdown。`;
 
-export class CodexAdapter implements AgentAdapter {
-  readonly id = 'codex';
-  readonly displayName = 'Codex';
+export class ClaudeAdapter implements AgentAdapter {
+  readonly id = 'claude';
+  readonly displayName = 'Claude Code';
 
   private readonly binary: string;
 
-  constructor(opts: CodexAdapterOptions = {}) {
-    this.binary = opts.binary ?? 'codex';
+  constructor(opts: ClaudeAdapterOptions = {}) {
+    this.binary = opts.binary ?? 'claude';
   }
 
   async isAvailable(): Promise<boolean> {
@@ -48,14 +48,23 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   run(opts: AgentRunOptions): AgentRun {
-    const prompt = `${BRIDGE_CONTEXT_PROMPT}\n\n---\n\n${opts.prompt}`;
-    const args = opts.sessionId
-      ? resumeArgs(opts, prompt)
-      : execArgs(opts, prompt);
+    const args = [
+      '-p',
+      opts.prompt,
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--permission-mode',
+      opts.permissionMode ?? 'bypassPermissions',
+      '--append-system-prompt',
+      BRIDGE_SYSTEM_PROMPT,
+    ];
+    if (opts.sessionId) args.push('--resume', opts.sessionId);
+    if (opts.model) args.push('--model', opts.model);
 
     const child = spawn(this.binary, args, {
       cwd: opts.cwd,
-      env: { ...process.env, LARK_CODEX: '1', LARK_CODEX_AGENT: 'codex' },
+      env: { ...process.env, LARK_CODEX: '1', LARK_CODEX_AGENT: 'claude' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -78,9 +87,7 @@ export class CodexAdapter implements AgentAdapter {
       while (nl !== -1) {
         const line = stderrBuffer.slice(0, nl);
         stderrBuffer = stderrBuffer.slice(nl + 1);
-        if (line.trim() && !isBenignCodexStderr(line)) {
-          log.warn('agent', 'stderr', { line: truncate(line, 500) });
-        }
+        if (line.trim()) log.warn('agent', 'stderr', { agent: this.id, line: truncate(line, 500) });
         nl = stderrBuffer.indexOf('\n');
       }
     });
@@ -90,7 +97,7 @@ export class CodexAdapter implements AgentAdapter {
       runtimeError = err;
     });
     child.on('exit', (code, signal) => {
-      log.info('agent', 'exit', { pid: child.pid ?? null, code, signal });
+      log.info('agent', 'exit', { agent: this.id, pid: child.pid ?? null, code, signal });
     });
 
     const stopGraceMs = opts.stopGraceMs ?? 5000;
@@ -139,39 +146,8 @@ export class CodexAdapter implements AgentAdapter {
   }
 }
 
-function execArgs(opts: AgentRunOptions, prompt: string): string[] {
-  return [
-    'exec',
-    '--json',
-    '--skip-git-repo-check',
-    '--dangerously-bypass-approvals-and-sandbox',
-    ...(opts.cwd ? ['-C', opts.cwd] : []),
-    ...imageArgs(opts.images),
-    ...(opts.model ? ['-m', opts.model] : []),
-    prompt,
-  ];
-}
-
-function resumeArgs(opts: AgentRunOptions, prompt: string): string[] {
-  return [
-    'exec',
-    'resume',
-    '--json',
-    '--skip-git-repo-check',
-    '--dangerously-bypass-approvals-and-sandbox',
-    ...imageArgs(opts.images),
-    ...(opts.model ? ['-m', opts.model] : []),
-    opts.sessionId!,
-    prompt,
-  ];
-}
-
-function imageArgs(images: string[] | undefined): string[] {
-  return (images ?? []).flatMap((path) => ['-i', path]);
-}
-
 async function* createEventStream(
-  child: CodexChild,
+  child: ClaudeChild,
   stderrChunks: Buffer[],
   getError: () => Error | null,
 ): AsyncGenerator<AgentEvent> {
@@ -180,7 +156,7 @@ async function* createEventStream(
     const err = getError();
     yield {
       type: 'error',
-      message: err ? `failed to spawn codex: ${err.message}` : 'spawn returned no pid',
+      message: err ? `failed to spawn claude: ${err.message}` : 'spawn returned no pid',
     };
     return;
   }
@@ -214,36 +190,12 @@ async function* createEventStream(
   if (exitCode !== 0 && exitCode !== null) {
     const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
     const detail = stderr ? `: ${truncate(stderr, 500)}` : '';
-    yield { type: 'error', message: `codex exited with code ${exitCode}${detail}` };
+    yield { type: 'error', message: `claude exited with code ${exitCode}${detail}` };
   } else if (runtimeError) {
-    yield { type: 'error', message: `codex runtime error: ${runtimeError.message}` };
+    yield { type: 'error', message: `claude runtime error: ${runtimeError.message}` };
   }
 }
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}...` : s;
-}
-
-function isBenignCodexStderr(line: string): boolean {
-  const trimmed = line.trim();
-  return (
-    trimmed === 'Reading additional input from stdin...' ||
-    trimmed.includes('codex_core_skills::loader: ignoring interface.icon_') ||
-    trimmed.includes('codex_core_plugins::manager: failed to warm featured plugin ids cache') ||
-    trimmed === '>' ||
-    trimmed === '/>' ||
-    trimmed.startsWith('<') ||
-    trimmed.startsWith('</') ||
-    trimmed.startsWith('xmlns=') ||
-    trimmed.startsWith('width=') ||
-    trimmed.startsWith('height=') ||
-    trimmed.startsWith('viewBox=') ||
-    trimmed.startsWith('fill=') ||
-    trimmed.startsWith('strokeWidth=') ||
-    trimmed.startsWith('class=') ||
-    trimmed.startsWith('d=') ||
-    trimmed.includes('challenge-error-text') ||
-    trimmed.includes('window._cf_chl_opt') ||
-    trimmed.includes('document.createElement')
-  );
 }

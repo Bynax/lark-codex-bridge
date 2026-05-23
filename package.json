@@ -1,7 +1,7 @@
 {
   "name": "lark-codex-bridge",
   "version": "0.1.0",
-  "description": "Bridge Feishu/Lark messenger with the local Codex CLI",
+  "description": "Bridge Feishu/Lark messenger with local AI coding CLIs",
   "type": "module",
   "bin": {
     "lark-codex-bridge": "./bin/lark-codex-bridge.mjs"
@@ -53,6 +53,8 @@
     "lark",
     "codex",
     "openai-codex",
+    "claude",
+    "claude-code",
     "cli",
     "channel",
     "bridge"

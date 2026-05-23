@@ -1,8 +1,9 @@
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import type { AgentId } from '../config/schema';
 
 export interface SessionSummary {
   sessionId: string;
@@ -17,8 +18,17 @@ interface CodexSessionIndexLine {
   updated_at?: string;
 }
 
-/** Return the most recent Codex sessions, newest first. */
-export async function listRecentSessions(_cwd: string, limit = 5): Promise<SessionSummary[]> {
+/** Return the most recent sessions for the selected agent, newest first. */
+export async function listRecentSessions(
+  cwd: string,
+  limit = 5,
+  agent: AgentId = 'codex',
+): Promise<SessionSummary[]> {
+  if (agent === 'claude') return listRecentClaudeSessions(cwd, limit);
+  return listRecentCodexSessions(limit);
+}
+
+async function listRecentCodexSessions(limit: number): Promise<SessionSummary[]> {
   const path = join(homedir(), '.codex', 'session_index.jsonl');
   try {
     await stat(path);
@@ -55,6 +65,51 @@ export async function listRecentSessions(_cwd: string, limit = 5): Promise<Sessi
     .map((s) => ({ ...s, lineCount }));
 }
 
+function encodeClaudeCwd(cwd: string): string {
+  return cwd.replace(/\//g, '-');
+}
+
+function claudeProjectDir(cwd: string): string {
+  return join(homedir(), '.claude', 'projects', encodeClaudeCwd(cwd));
+}
+
+async function listRecentClaudeSessions(cwd: string, limit: number): Promise<SessionSummary[]> {
+  const dir = claudeProjectDir(cwd);
+  let files: string[];
+  try {
+    files = await readdir(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+
+  const jsonls = files.filter((f) => f.endsWith('.jsonl'));
+  const withStats = await Promise.all(
+    jsonls.map(async (f) => {
+      const path = join(dir, f);
+      try {
+        const st = await stat(path);
+        return { file: f, path, mtime: st.mtimeMs };
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  const sorted = withStats
+    .filter((x): x is { file: string; path: string; mtime: number } => x !== null)
+    .sort((a, b) => b.mtime - a.mtime)
+    .slice(0, limit);
+
+  return Promise.all(
+    sorted.map(async (entry) => {
+      const sessionId = entry.file.replace(/\.jsonl$/, '');
+      const { preview, lineCount } = await summarizeClaudeSession(entry.path);
+      return { sessionId, mtime: entry.mtime, preview, lineCount };
+    }),
+  );
+}
+
 function parseIndexLine(line: string): CodexSessionIndexLine | null {
   try {
     const parsed = JSON.parse(line) as CodexSessionIndexLine;
@@ -62,6 +117,51 @@ function parseIndexLine(line: string): CodexSessionIndexLine | null {
   } catch {
     return null;
   }
+}
+
+async function summarizeClaudeSession(path: string): Promise<{ preview: string; lineCount: number }> {
+  const stream = createReadStream(path, { encoding: 'utf8' });
+  const rl = createInterface({ input: stream });
+  let preview = '';
+  let lineCount = 0;
+  try {
+    for await (const line of rl) {
+      lineCount++;
+      if (!preview && line.includes('"type":"user"')) {
+        try {
+          const obj = JSON.parse(line) as { type?: string; message?: { content?: unknown } };
+          if (obj.type === 'user' && obj.message) {
+            const text = extractClaudeUserText(obj.message.content);
+            if (text) preview = text.slice(0, 80);
+          }
+        } catch {
+          /* malformed line */
+        }
+      }
+      if (lineCount > 20_000) break;
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+  return { preview: preview || '(空会话)', lineCount };
+}
+
+function extractClaudeUserText(content: unknown): string {
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (
+        block &&
+        typeof block === 'object' &&
+        (block as { type?: unknown }).type === 'text' &&
+        typeof (block as { text?: unknown }).text === 'string'
+      ) {
+        return (block as { text: string }).text.trim();
+      }
+    }
+  }
+  return '';
 }
 
 /** Format a relative time like "3 小时前", "昨天", "3 天前". */

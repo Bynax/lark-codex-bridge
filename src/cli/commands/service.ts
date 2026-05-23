@@ -1,5 +1,5 @@
-import { CodexAdapter } from '../../agent/codex/adapter';
-import { isComplete } from '../../config/schema';
+import { createAgentAdapter } from '../../agent/factory';
+import { getAgentId, isComplete } from '../../config/schema';
 import { loadConfig } from '../../config/store';
 import { daemonStderrPath, daemonStdoutPath } from '../../daemon/paths';
 import {
@@ -118,7 +118,12 @@ async function reportConnectAfter(
   verb: 'started' | 'restarted',
   fn: () => ServiceResultLike,
 ): Promise<void> {
-  const cfg = await loadConfig();
+  const loaded = await loadConfig();
+  if (!isComplete(loaded)) {
+    console.error('bot 配置不完整。请先运行 `run` 完成首次配置。');
+    process.exit(1);
+  }
+  const cfg = loaded;
   const appId = cfg.accounts?.app?.id ?? '';
   const beforePids = new Set(
     readAndPrune()
@@ -137,7 +142,7 @@ async function reportConnectAfter(
 
   const entry = await waitForServiceConnect(appId, beforePids);
   if (entry) {
-    const agent = new CodexAdapter();
+    const agent = createAgentAdapter(getAgentId(cfg));
     const verbZh = verb === 'started' ? '已启动' : '已重启';
     console.log(
       `✓ ${verbZh}  bot: ${entry.botName} (${entry.appId})  agent: ${agent.displayName} (${agent.id})  进程: ${entry.id}`,

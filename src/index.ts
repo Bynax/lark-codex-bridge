@@ -9,4 +9,6 @@ export {
   markInterrupted,
 } from './card/run-state';
 export type { RunState, ToolEntry, Block, ToolStatus, Terminal, FooterStatus } from './card/run-state';
+export { ClaudeAdapter } from './agent/claude/adapter';
 export { CodexAdapter } from './agent/codex/adapter';
+export { ConfiguredAgentAdapter, createAgentAdapter } from './agent/factory';

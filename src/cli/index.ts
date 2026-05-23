@@ -21,7 +21,7 @@ const program = new Command();
 
 program
   .name('lark-codex-bridge')
-  .description('Bridge Feishu/Lark messenger with the local Codex CLI')
+  .description('Bridge Feishu/Lark messenger with local AI coding CLIs')
   .version(pkg.version, '-v, --version');
 
 // === process-level commands (work directly on bridge processes) ===
@@ -32,7 +32,7 @@ program
   .option('-c, --config <path>', 'path to config file')
   .option('--skip-preflight', 'skip optional pre-flight checks')
   .action(async (opts: { config?: string; skipPreflight?: boolean }) => {
-    await runStart({ config: opts.config });
+    await runStart({ config: opts.config, skipPreflight: opts.skipPreflight });
   });
 
 program
@@ -55,8 +55,8 @@ program
   .command('start')
   .description('Install (if needed) and start the bridge as an OS-managed daemon')
   .option('--skip-preflight', 'skip optional pre-flight checks')
-  .action(async (_opts: { skipPreflight?: boolean }) => {
-    await runServiceStart();
+  .action(async (opts: { skipPreflight?: boolean }) => {
+    await runServiceStart({ skipPreflight: opts.skipPreflight });
   });
 
 program

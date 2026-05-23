@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import { agentDisplayName, agentInstallHint, createAgentAdapter } from '../agent/factory';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
@@ -12,8 +13,9 @@ import {
 import { configCancelledCard, configFormCard, configSavedCard } from '../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
-import type { AppConfig, MessageReplyMode, TenantBrand } from '../config/schema';
+import type { AgentId, AppConfig, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
+  getAgentId,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRequireMentionInGroup,
@@ -33,7 +35,7 @@ import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
 
 export interface Controls {
-  /** Restart the bridge in-process: disconnect WS, kill Codex runs, reload
+  /** Restart the bridge in-process: disconnect WS, kill agent runs, reload
    * config, reconnect with the new credentials. */
   restart(): Promise<void>;
   /** Stop this whole process gracefully (disconnect + exit). Used by /exit
@@ -86,6 +88,7 @@ const handlers: Record<string, Handler> = {
   '/status': handleStatus,
   '/help': handleHelp,
   '/account': handleAccount,
+  '/agent': handleAgent,
   '/config': handleConfig,
   '/stop': handleStop,
   '/timeout': handleTimeout,
@@ -102,6 +105,7 @@ const handlers: Record<string, Handler> = {
  */
 const ADMIN_COMMANDS = new Set([
   '/account',
+  '/agent',
   '/config',
   '/exit',
   '/reconnect',
@@ -346,14 +350,15 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
   const limit = Number.isFinite(n) && n > 0 && n <= 20 ? n : 5;
 
   const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
-  const sessions = await listRecentSessions(cwd, limit);
+  const agentId = ctx.agent.id as AgentId;
+  const sessions = await listRecentSessions(cwd, limit, agentId);
   const currentSession = ctx.sessions.getRaw(ctx.scope);
   const entries = sessions.map((s) => ({
     sessionId: s.sessionId,
     preview: s.preview,
     relTime: formatRelTime(s.mtime),
     lineCount: s.lineCount,
-    current: s.sessionId === currentSession?.sessionId,
+    current: s.sessionId === currentSession?.sessionId && currentSession?.agent === agentId,
   }));
   const card = resumeCard(cwd, entries);
   await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
@@ -362,7 +367,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
 async function applyResume(sessionId: string, ctx: CommandContext): Promise<void> {
   const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
   ctx.activeRuns.interrupt(ctx.scope);
-  ctx.sessions.set(ctx.scope, sessionId, cwd);
+  ctx.sessions.set(ctx.scope, sessionId, cwd, ctx.agent.id as AgentId);
   await reply(
     ctx,
     `✓ 已恢复会话 \`${sessionId.slice(0, 8)}…\`。接着发消息就行。`,
@@ -375,12 +380,51 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
   const card = statusCard({
     cwd,
     sessionId: sess?.sessionId,
-    sessionStale: Boolean(sess && sess.cwd !== cwd),
+    sessionStale: Boolean(sess && (sess.cwd !== cwd || sess.agent !== ctx.agent.id)),
     agentName: ctx.agent.displayName,
     scope: ctx.scope,
     chatMode: ctx.chatMode,
   });
   await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+}
+
+async function handleAgent(args: string, ctx: CommandContext): Promise<void> {
+  const raw = args.trim().toLowerCase();
+  const current = getAgentId(ctx.controls.cfg);
+  if (!raw) {
+    await reply(
+      ctx,
+      `当前 agent: **${agentDisplayName(current)}** (\`${current}\`)\n\n` +
+        '用法:`/agent codex` 或 `/agent claude`。也可以在 `/config` 里切换。',
+    );
+    return;
+  }
+
+  const next: AgentId | undefined =
+    raw === 'codex' ? 'codex' : raw === 'claude' || raw === 'claude-code' ? 'claude' : undefined;
+  if (!next) {
+    await reply(ctx, '用法:`/agent codex` 或 `/agent claude`');
+    return;
+  }
+
+  const adapter = createAgentAdapter(next);
+  if (!(await adapter.isAvailable())) {
+    await reply(ctx, `❌ 未找到 ${agentDisplayName(next)}。\n${agentInstallHint(next)}`);
+    return;
+  }
+
+  await ctx.activeRuns.stopAll();
+  ctx.controls.cfg.preferences = {
+    ...(ctx.controls.cfg.preferences ?? {}),
+    agent: next,
+  };
+  await saveConfig(ctx.controls.cfg, ctx.controls.configPath);
+  ctx.sessions.clear(ctx.scope);
+  log.info('command', 'agent-switch', { agent: next, scope: ctx.scope });
+  await reply(
+    ctx,
+    `✓ 已切换 agent 到 **${agentDisplayName(next)}**。\n当前会话已重置，下一条消息会用新的 agent。`,
+  );
 }
 
 async function handleStop(_args: string, ctx: CommandContext): Promise<void> {
@@ -728,6 +772,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
   const ms = getRunIdleTimeoutMs(ctx.controls.cfg);
   const access = ctx.controls.cfg.preferences?.access ?? {};
   const card = configFormCard({
+    agent: getAgentId(ctx.controls.cfg),
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
@@ -756,6 +801,15 @@ async function cancelConfig(ctx: CommandContext): Promise<void> {
 
 async function submitConfig(ctx: CommandContext): Promise<void> {
   const fv = ctx.formValue ?? {};
+  const rawAgent = String(fv.agent ?? '').trim();
+  const agent: AgentId =
+    rawAgent === 'claude' || rawAgent === 'codex' ? (rawAgent as AgentId) : getAgentId(ctx.controls.cfg);
+  const agentAdapter = createAgentAdapter(agent);
+  if (!(await agentAdapter.isAvailable())) {
+    await reply(ctx, `❌ 未找到 ${agentDisplayName(agent)}。\n${agentInstallHint(agent)}`);
+    return;
+  }
+
   const rawReply = String(fv.message_reply ?? '').trim();
   const messageReply: MessageReplyMode =
     rawReply === 'markdown' || rawReply === 'text' || rawReply === 'card'
@@ -871,6 +925,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     // runAgentBatch's reads, so this takes effect on the next message.
     ctx.controls.cfg.preferences = {
       ...(ctx.controls.cfg.preferences ?? {}),
+      agent,
       messageReply,
       // Mark the messageReply value as living in the new (post-0.1.27)
       // semantic — `text` now means real plain text, not the lightweight
@@ -897,6 +952,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     }
 
     log.info('command', 'config-saved', {
+      agent,
       messageReply,
       showToolCalls,
       maxConcurrentRuns,
@@ -911,6 +967,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       channel,
       formMsgId,
       configSavedCard({
+        agent,
         messageReply,
         showToolCalls,
         maxConcurrentRuns,

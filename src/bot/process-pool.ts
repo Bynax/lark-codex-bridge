@@ -1,9 +1,9 @@
 import { log } from '../core/logger';
 
 /**
- * FIFO concurrency cap for Codex runs. Especially useful in topic-group
+ * FIFO concurrency cap for agent runs. Especially useful in topic-group
  * scenarios where each topic spawns its own run — without a cap, a single
- * busy group could trivially explode to dozens of concurrent Codex
+ * busy group could trivially explode to dozens of concurrent agent
  * subprocesses, drowning RAM and rate limits.
  *
  * Use:

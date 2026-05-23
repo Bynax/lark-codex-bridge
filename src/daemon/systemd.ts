@@ -16,7 +16,7 @@ export interface UnitInputs {
   /** Absolute path to the bridge CLI entry (the file currently executing). */
   bridgeEntryPath: string;
   /** PATH for the daemon process — captured from current shell so child
-   * tools (codex) can be resolved by name. systemd user units
+   * tools (codex / claude) can be resolved by name. systemd user units
    * inherit a minimal env otherwise. */
   envPath: string;
 }

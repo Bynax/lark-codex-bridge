@@ -10,13 +10,14 @@ import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 
 /** Marker key on a button's value object that flags the cardAction as
- * a callback that should be forwarded back to the agent (Codex) instead
+ * a callback that should be forwarded back to the active agent instead
  * of dispatched to a built-in command handler. The double-underscore
  * sigils make it virtually impossible to collide with normal payload
  * fields the agent might set.
  */
 const CODEX_CALLBACK_MARKER = '__codex_cb';
 const LEGACY_CALLBACK_MARKER = '__claude_cb';
+const AGENT_CALLBACK_MARKER = '__agent_cb';
 
 export interface CardDispatchDeps {
   channel: LarkChannel;
@@ -72,11 +73,15 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     return;
   }
 
-  // Codex-driven callback: the button was rendered with `__codex_cb` set
+  // Agent-driven callback: the button was rendered with a callback marker
   // on the value. Forward the click back into the scope's pending queue so
-  // Codex resumes its session and sees the click as a follow-up message.
-  if (CODEX_CALLBACK_MARKER in payload || LEGACY_CALLBACK_MARKER in payload) {
-    forwardToCodex(deps, payload, formValue, scope, threadId);
+  // the active agent resumes its session and sees the click as follow-up.
+  if (
+    CODEX_CALLBACK_MARKER in payload ||
+    LEGACY_CALLBACK_MARKER in payload ||
+    AGENT_CALLBACK_MARKER in payload
+  ) {
+    forwardToAgent(deps, payload, formValue, scope, threadId);
     return;
   }
 
@@ -147,22 +152,24 @@ async function lookupMessageThreadId(
   }
 }
 
-function forwardToCodex(
+function forwardToAgent(
   deps: CardDispatchDeps,
   payload: Record<string, unknown>,
   formValue: Record<string, unknown> | undefined,
   scope: string,
   threadId: string | undefined,
 ): void {
-  // Strip marker keys so Codex only sees the meaningful fields it set.
+  // Strip marker keys so the agent only sees the meaningful fields it set.
   const {
     [CODEX_CALLBACK_MARKER]: _codexMarker,
     [LEGACY_CALLBACK_MARKER]: _legacyMarker,
-    ...codexPayload
+    [AGENT_CALLBACK_MARKER]: _agentMarker,
+    ...agentPayload
   } = payload;
-  const merged = formValue ? { ...codexPayload, form_value: formValue } : codexPayload;
-  log.info('cardAction', 'forward-codex', {
+  const merged = formValue ? { ...agentPayload, form_value: formValue } : agentPayload;
+  log.info('cardAction', 'forward-agent', {
     scope,
+    agent: deps.agent.id,
     payload: JSON.stringify(merged).slice(0, 200),
   });
   const synthetic: NormalizedMessage = {

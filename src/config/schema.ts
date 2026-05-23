@@ -66,6 +66,7 @@ export interface SecretsConfig {
  * `markdown`. See `messageReplyMigrated` for the auto-coercion logic.
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
+export type AgentId = 'codex' | 'claude';
 
 /**
  * Access control settings. All three lists default to "no restriction" when
@@ -89,6 +90,11 @@ export interface AppAccess {
 }
 
 export interface AppPreferences {
+  /**
+   * Which local coding agent CLI should handle chat messages. Default
+   * 'codex' preserves existing deployments; 'claude' uses Claude Code.
+   */
+  agent?: AgentId;
   /** Reply rendering mode for IM (group/p2p) messages. Default 'card'. */
   messageReply?: MessageReplyMode;
   /**
@@ -102,19 +108,19 @@ export interface AppPreferences {
   messageReplyMigrated?: boolean;
   /**
    * Whether to render tool-call blocks (Bash / Read / Edit / ...) in the
-   * output. Default true. Turn off if you only care about Codex's final
+   * output. Default true. Turn off if you only care about the agent's final
    * text answer and want to hide the "工具调用过程".
    */
   showToolCalls?: boolean;
   /**
-   * Cap on concurrent Codex runs across all chats / topics. Excess runs
+   * Cap on concurrent agent runs across all chats / topics. Excess runs
    * queue FIFO. Default 10. Mostly relevant for topic groups where each
    * topic can spawn its own run; capping protects RAM / token spend.
    */
   maxConcurrentRuns?: number;
   /**
-   * Global default idle-timeout for Codex runs, in minutes. When set,
-   * if Codex emits no stream event for this long the bridge kills the
+   * Global default idle-timeout for agent runs, in minutes. When set,
+   * if the agent emits no stream event for this long the bridge kills the
    * run as presumed-hung. Undefined / 0 = no timeout (the default — runs
    * can hang indefinitely). Per-scope `/timeout` overrides this.
    */
@@ -123,7 +129,7 @@ export interface AppPreferences {
    * Whether the bot only responds to messages that @-mention it in groups
    * (regular and topic groups). p2p is always unrestricted. Default true:
    * groups are quiet unless the user @bot. Set false to let any group
-   * message reach Codex.
+   * message reach the agent.
    *
    * @全员 is never responded to regardless (SDK `respondToMentionAll: false`).
    * Cloud-doc comments still require @-mention unconditionally.
@@ -132,7 +138,7 @@ export interface AppPreferences {
   /** Access control — user/chat allowlists + admin gating. See AppAccess. */
   access?: AppAccess;
   /**
-   * Grace period (ms) between SIGTERM and SIGKILL when killing the Codex
+   * Grace period (ms) between SIGTERM and SIGKILL when killing the agent
    * subprocess. Default 5000ms.
    * Range 100-30000; out-of-range values fall back to default.
    */
@@ -195,6 +201,13 @@ export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
   return 'markdown';
 }
 
+/** Resolve the selected local coding agent. */
+export function getAgentId(cfg: AppConfig): AgentId {
+  const raw = cfg.preferences?.agent;
+  if (raw === 'claude') return 'claude';
+  return 'codex';
+}
+
 /** Resolve the show-tool-calls preference with default fallback. */
 export function getShowToolCalls(cfg: AppConfig): boolean {
   return cfg.preferences?.showToolCalls !== false;
@@ -225,7 +238,7 @@ export function getRequireMentionInGroup(cfg: AppConfig): boolean {
  * the user didn't really mean.
  */
 /**
- * Grace period before SIGKILL fallback when stopping a Codex subprocess.
+ * Grace period before SIGKILL fallback when stopping an agent subprocess.
  * Returns ms. Defaults to 5000 (5 seconds). Clamps to [100, 30000] so a
  * typo can't either make stop() effectively SIGKILL-immediate or hang for
  * minutes.
