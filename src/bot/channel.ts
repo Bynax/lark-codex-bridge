@@ -36,6 +36,11 @@ import { MediaCache, type LocalAttachment } from '../media/cache';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
+import {
+  extractArtifactsFromState,
+  prepareImageArtifacts,
+  sendImageArtifacts,
+} from './artifacts';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
 import { expandInteractiveCard } from './interactive-card';
 import { startKeepalive } from './keepalive';
@@ -508,6 +513,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
+  const runStartedAtMs = Date.now();
   const run = agent.run({
     prompt,
     sessionId: resumeFrom,
@@ -539,6 +545,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (getShowToolCalls(controls.cfg)) return state;
     return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
   };
+  const renderableState = (state: RunState): RunState =>
+    filterForPrefs(extractArtifactsFromState(state).state);
 
   // For topic groups: thread the reply so it lands in the same topic as the
   // user's message. Otherwise the SDK posts at top level and the user's
@@ -557,6 +565,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     replyMode === 'card' ? undefined : await addWorkingReaction(channel, lastMsg.messageId);
 
   try {
+    let finalState: RunState = initialState;
     if (replyMode === 'card') {
       await channel.stream(
         chatId,
@@ -564,9 +573,17 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           card: {
             initial: renderCard(initialState),
             producer: async (ctrl) => {
-              await processAgentStream(handle, sessions, scope, cwd, agentId, idleTimeoutMs, async (state) => {
-                await ctrl.update(renderCard(filterForPrefs(state)));
-              });
+              finalState = await processAgentStream(
+                handle,
+                sessions,
+                scope,
+                cwd,
+                agentId,
+                idleTimeoutMs,
+                async (state) => {
+                  await ctrl.update(renderCard(renderableState(state)));
+                },
+              );
             },
           },
         },
@@ -577,9 +594,17 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         chatId,
         {
           markdown: async (ctrl) => {
-            await processAgentStream(handle, sessions, scope, cwd, agentId, idleTimeoutMs, async (state) => {
-              await ctrl.setContent(renderText(filterForPrefs(state)));
-            });
+            finalState = await processAgentStream(
+              handle,
+              sessions,
+              scope,
+              cwd,
+              agentId,
+              idleTimeoutMs,
+              async (state) => {
+                await ctrl.setContent(renderText(renderableState(state)));
+              },
+            );
           },
         },
         sendOpts,
@@ -588,14 +613,24 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
       // (msg_type=post) message — no card, no streaming, no typewriter.
-      let finalState: RunState = initialState;
-      await processAgentStream(handle, sessions, scope, cwd, agentId, idleTimeoutMs, async (state) => {
-        finalState = state;
-      });
-      const body = renderText(filterForPrefs(finalState));
+      finalState = await processAgentStream(
+        handle,
+        sessions,
+        scope,
+        cwd,
+        agentId,
+        idleTimeoutMs,
+        async () => {},
+      );
+      const body = renderText(renderableState(finalState));
       if (body.trim()) {
         await channel.send(chatId, { markdown: body }, sendOpts);
       }
+    }
+    const extracted = extractArtifactsFromState(finalState);
+    const artifacts = await prepareImageArtifacts(extracted.artifacts, { cwd, runStartedAtMs });
+    if (artifacts.length > 0) {
+      await sendImageArtifacts(channel, chatId, artifacts, sendOpts);
     }
   } catch (err) {
     log.fail('stream', err);
@@ -620,7 +655,7 @@ async function processAgentStream(
   agentId: ReturnType<typeof getAgentId>,
   idleTimeoutMs: number | undefined,
   flush: (state: RunState) => Promise<void>,
-): Promise<void> {
+): Promise<RunState> {
   let state: RunState = initialState;
 
   // Idle watchdog: the agent going silent for `idleTimeoutMs` is treated as
@@ -735,6 +770,7 @@ async function processAgentStream(
       await handle.run.stop();
     }
   }
+  return state;
 }
 
 /**

@@ -27,7 +27,11 @@ const BRIDGE_CONTEXT_PROMPT = `# lark-codex-bridge 运行约定
 
 如果你通过可用工具发送飞书 CardKit 卡片，并希望按钮点击回到当前会话，请在按钮 value 里加入 "__agent_cb": true 或 "__codex_cb": true。bridge 会去掉这个 marker，再把按钮 payload 作为 [card-click] 消息发回给你。
 
-回复应面向飞书聊天场景：简洁、直接、默认用 Markdown。`;
+回复应面向飞书聊天场景：简洁、直接、默认用 Markdown。
+
+如果你生成了用户需要查看的本地图片文件，请在回复末尾输出：
+<bridge_artifact type="image" path="/absolute/path/to/image.png" caption="可选说明" />
+bridge 会校验并把图片作为飞书原图消息发回；不要只给用户本地文件路径。`;
 
 export class CodexAdapter implements AgentAdapter {
   readonly id = 'codex';
