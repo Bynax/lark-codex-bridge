@@ -6,7 +6,7 @@ import type { Block, RunState } from '../card/run-state';
 import { log } from '../core/logger';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const MTIME_SKEW_MS = 10_000;
+const RECENT_IMAGE_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 const BRIDGE_ARTIFACT_RE =
   /<bridge_artifact\b([^>]*)\/>|<bridge_artifact\b([^>]*)>[\s\S]*?<\/bridge_artifact>/gi;
@@ -193,8 +193,8 @@ async function validateImageArtifact(
   if (before.isSymbolicLink()) throw new Error('symbolic links are not allowed');
   if (before.size <= 0) throw new Error('empty file');
   if (before.size > MAX_IMAGE_BYTES) throw new Error('image is too large');
-  if (before.mtimeMs < opts.runStartedAtMs - MTIME_SKEW_MS) {
-    throw new Error('file was not created or updated by this run');
+  if (before.mtimeMs < opts.runStartedAtMs - RECENT_IMAGE_WINDOW_MS) {
+    throw new Error('image is older than the allowed artifact window');
   }
 
   const resolved = await realpath(absolute);

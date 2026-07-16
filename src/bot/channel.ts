@@ -566,8 +566,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   try {
     let finalState: RunState = initialState;
+    let streamedMessageId: string | undefined;
     if (replyMode === 'card') {
-      await channel.stream(
+      const result = await channel.stream(
         chatId,
         {
           card: {
@@ -589,8 +590,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         },
         sendOpts,
       );
+      streamedMessageId = result.messageId;
     } else if (replyMode === 'markdown') {
-      await channel.stream(
+      const result = await channel.stream(
         chatId,
         {
           markdown: async (ctrl) => {
@@ -609,6 +611,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         },
         sendOpts,
       );
+      streamedMessageId = result.messageId;
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
@@ -628,9 +631,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       }
     }
     const extracted = extractArtifactsFromState(finalState);
+    const visibleBody = renderText(filterForPrefs(extracted.state)).trim();
     const artifacts = await prepareImageArtifacts(extracted.artifacts, { cwd, runStartedAtMs });
     if (artifacts.length > 0) {
       await sendImageArtifacts(channel, chatId, artifacts, sendOpts);
+    } else if (extracted.artifacts.length > 0 && !visibleBody) {
+      await channel.send(chatId, { markdown: '⚠️ 图片回传失败：没有找到可发送的图片。' }, sendOpts);
+    }
+    if (streamedMessageId && extracted.artifacts.length > 0 && !visibleBody) {
+      await recallArtifactOnlyPlaceholder(channel, streamedMessageId);
     }
   } catch (err) {
     log.fail('stream', err);
@@ -639,6 +648,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (reactionId) {
       await removeReaction(channel, lastMsg.messageId, reactionId);
     }
+  }
+}
+
+async function recallArtifactOnlyPlaceholder(
+  channel: LarkChannel,
+  messageId: string,
+): Promise<void> {
+  try {
+    await channel.recallMessage(messageId);
+    log.info('artifact', 'recalled-placeholder', { messageId });
+  } catch (err) {
+    log.warn('artifact', 'recall-placeholder-failed', {
+      messageId,
+      reason: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
