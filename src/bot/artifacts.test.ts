@@ -54,23 +54,18 @@ describe('bridge artifacts', () => {
   it('prepares only real images under the run workspace', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'bridge-artifacts-'));
     const good = join(dir, 'good.png');
-    const recent = join(dir, 'recent.png');
     const old = join(dir, 'old.png');
     const bad = join(dir, 'bad.png');
+    const now = Date.now();
     await writeFile(good, PNG_1X1);
-    await writeFile(recent, PNG_1X1);
     await writeFile(old, PNG_1X1);
     await writeFile(bad, 'not an image');
-    const now = Date.now();
-    const thirtyMinutesAgo = new Date(now - 30 * 60 * 1000);
-    const threeHoursAgo = new Date(now - 3 * 60 * 60 * 1000);
-    await utimes(recent, thirtyMinutesAgo, thirtyMinutesAgo);
-    await utimes(old, threeHoursAgo, threeHoursAgo);
+    const thirtySecondsAgo = new Date(now - 30_000);
+    await utimes(old, thirtySecondsAgo, thirtySecondsAgo);
 
     const prepared = await prepareImageArtifacts(
       [
         { type: 'image', path: good, source: 'tag' },
-        { type: 'image', path: recent, source: 'tag' },
         { type: 'image', path: old, source: 'tag' },
         { type: 'image', path: bad, source: 'tag' },
         { type: 'image', path: '/etc/passwd.png', source: 'tag' },
@@ -78,6 +73,6 @@ describe('bridge artifacts', () => {
       { cwd: dir, runStartedAtMs: now },
     );
 
-    expect(prepared.map((a) => a.path)).toEqual([good, recent]);
+    expect(prepared.map((a) => a.path)).toEqual([good]);
   });
 });
