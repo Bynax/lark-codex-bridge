@@ -38,7 +38,9 @@ import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
 import {
   extractArtifactsFromState,
+  prepareFileArtifacts,
   prepareImageArtifacts,
+  sendFileArtifacts,
   sendImageArtifacts,
 } from './artifacts';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
@@ -632,11 +634,17 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
     const extracted = extractArtifactsFromState(finalState);
     const visibleBody = renderText(filterForPrefs(extracted.state)).trim();
-    const artifacts = await prepareImageArtifacts(extracted.artifacts, { cwd, runStartedAtMs });
-    if (artifacts.length > 0) {
-      await sendImageArtifacts(channel, chatId, artifacts, sendOpts);
-    } else if (extracted.artifacts.length > 0 && !visibleBody) {
-      await channel.send(chatId, { markdown: '⚠️ 图片回传失败：没有找到可发送的图片。' }, sendOpts);
+    const artifactOpts = { cwd, runStartedAtMs };
+    const imageArtifacts = await prepareImageArtifacts(extracted.artifacts, artifactOpts);
+    const fileArtifacts = await prepareFileArtifacts(extracted.artifacts, artifactOpts);
+    if (imageArtifacts.length > 0) {
+      await sendImageArtifacts(channel, chatId, imageArtifacts, sendOpts);
+    }
+    if (fileArtifacts.length > 0) {
+      await sendFileArtifacts(channel, chatId, fileArtifacts, sendOpts);
+    }
+    if (imageArtifacts.length + fileArtifacts.length === 0 && extracted.artifacts.length > 0) {
+      await channel.send(chatId, { markdown: '⚠️ 文件回传失败：没有找到可发送的图片或附件。' }, sendOpts);
     }
     if (streamedMessageId && extracted.artifacts.length > 0 && !visibleBody) {
       await recallArtifactOnlyPlaceholder(channel, streamedMessageId);

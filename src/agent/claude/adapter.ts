@@ -31,7 +31,11 @@ const BRIDGE_SYSTEM_PROMPT = `# lark-codex-bridge 运行约定
 
 如果你生成了用户需要查看的本地图片文件，请在回复末尾输出：
 <bridge_artifact type="image" path="/absolute/path/to/image.png" caption="可选说明" />
-bridge 会校验并把图片作为飞书原图消息发回；不要只给用户本地文件路径。`;
+bridge 会校验并把图片作为飞书原图消息发回；不要只给用户本地文件路径。
+
+如果你生成了用户需要下载的本地文件（例如 pptx、pdf、docx、xlsx、zip），请在回复末尾输出：
+<bridge_artifact type="file" path="/absolute/path/to/file.pptx" filename="可选文件名.pptx" />
+bridge 会校验并把文件作为飞书附件发回；不要依赖 lark-cli 发送附件。`;
 
 export class ClaudeAdapter implements AgentAdapter {
   readonly id = 'claude';

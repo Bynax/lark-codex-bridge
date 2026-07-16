@@ -6,6 +6,7 @@ import type { RunState } from '../card/run-state';
 import {
   extractArtifactsFromState,
   extractArtifactsFromText,
+  prepareFileArtifacts,
   prepareImageArtifacts,
 } from './artifacts';
 
@@ -23,6 +24,23 @@ describe('bridge artifacts', () => {
     expect(out.text).toBe('好了');
     expect(out.artifacts).toEqual([
       { type: 'image', path: '/tmp/a.png', caption: '图 1', source: 'tag' },
+    ]);
+  });
+
+  it('extracts bridge_artifact file tags and strips them from text', () => {
+    const out = extractArtifactsFromText(
+      '文件好了\n<bridge_artifact type="file" path="/tmp/deck.pptx" filename="中国航天.pptx" />',
+    );
+
+    expect(out.text).toBe('文件好了');
+    expect(out.artifacts).toEqual([
+      {
+        type: 'file',
+        path: '/tmp/deck.pptx',
+        filename: '中国航天.pptx',
+        caption: undefined,
+        source: 'tag',
+      },
     ]);
   });
 
@@ -74,5 +92,32 @@ describe('bridge artifacts', () => {
     );
 
     expect(prepared.map((a) => a.path)).toEqual([good]);
+  });
+
+  it('prepares only files created or updated by the current run', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bridge-artifact-files-'));
+    const good = join(dir, 'deck.pptx');
+    const old = join(dir, 'old.pdf');
+    const unsupported = join(dir, 'script.sh');
+    const now = Date.now();
+    await writeFile(good, 'pptx bytes');
+    await writeFile(old, 'pdf bytes');
+    await writeFile(unsupported, 'echo nope');
+    const thirtySecondsAgo = new Date(now - 30_000);
+    await utimes(old, thirtySecondsAgo, thirtySecondsAgo);
+
+    const prepared = await prepareFileArtifacts(
+      [
+        { type: 'file', path: good, filename: '../deck-final.pptx', source: 'tag' },
+        { type: 'file', path: old, source: 'tag' },
+        { type: 'file', path: unsupported, source: 'tag' },
+        { type: 'file', path: '/etc/passwd', source: 'tag' },
+      ],
+      { cwd: dir, runStartedAtMs: now },
+    );
+
+    expect(prepared.map((a) => ({ path: a.path, filename: a.filename }))).toEqual([
+      { path: good, filename: 'deck-final.pptx' },
+    ]);
   });
 });
